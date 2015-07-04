@@ -25,6 +25,8 @@
 #
 #  -j NUM                Run NUM processes in parallel
 #
+#  -a ALLOW              Allowed extensions, comma-separated, include period.
+#
 # Running with -j 0 will run as many processes as cpu count.
 
 import os
@@ -32,7 +34,7 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
+from tempfile import NamedTemporaryFile as _NamedTemporaryFile
 
 
 try:
@@ -41,18 +43,22 @@ try:
 except ImportError:
     enable_multiprocessing = False
 
-# writing to a tempFile has different behavior on windows and linux
-if sys.platform == "linux" or sys.platform == "linux2":
-   OPT_DELETE = True
-elif sys.platform == "darwin":
-   OPT_DELETE= True
-elif sys.platform == "win32":
-   OPT_DELETE = False
-
 MERGE_SCRIPTS = re.compile(
     '</script>\s*(?:<!--.*?-->\s*)*<script(?:(?!\ssrc).)*?>', re.DOTALL)
 SCRIPT = re.compile('<script(?:(?!\ssrc).)*?>(.*?)</script>', re.DOTALL)
 
+# writing to a tempFile has different behavior on windows and linux
+def NamedTemporaryFile():
+    global temp_files
+    if sys.platform == "linux" or sys.platform == "linux2":
+        OPT_DELETE = True
+    elif sys.platform == "darwin":
+        OPT_DELETE= True
+    elif sys.platform == "win32":
+        OPT_DELETE = False    
+    tempFile = _NamedTemporaryFile(delete = OPT_DELETE)
+    temp_files.append(tempFile.name)
+    return tempFile
 
 def compile(js_file, js_output_file, html_file=''):
     # SIMPLE_OPTIMIZATIONS has some problem with Opera, so we'll use
@@ -69,14 +75,14 @@ def compile(js_file, js_output_file, html_file=''):
             '--compilation_level', level,
             '--js', js_file,
             '--js_output_file', js_output_file]
-    process = subprocess.Popen(args=args,
+    process = subprocess.Popen(args=args,   
                             stdout=open(os.devnull, 'w'),
                             stderr=subprocess.STDOUT)
-    ouput, err = process.communicate()
-    if err:
+    stdout, stderr = process.communicate()
+    if stderr:
         raise Exception(' '.join([
             'Error(s) occurred while compiling %s' % js_file,
-            'possible cause: file may be invalid javascript.', output]))
+            'possible cause: file may be invalid javascript.', stdout]))
     
 def do_cleanup():
     for temp_file in temp_files:
@@ -85,8 +91,7 @@ def do_cleanup():
             os.remove(temp_file)
         
 def compress_css(css_file):
-    css_output_file = tempfile.NamedTemporaryFile(delete=OPT_DELETE)
-    temp_files.append(css_output_file.name)
+    css_output_file = NamedTemporaryFile()
     f = open(css_file)
     css = f.read()
     css = re.sub(r"\s+([!{};:>+\(\)\],])", r"\1", css)
@@ -99,16 +104,13 @@ def compress_css(css_file):
 
 
 def compress_js(js_file):
-    global temp_files
-    js_output_file = tempfile.NamedTemporaryFile(delete=OPT_DELETE)
+    js_output_file = NamedTemporaryFile()
     compile(js_file, js_output_file.name)
     return finish_compressors(js_output_file.name, js_file)
 
 
 def compress_html(html_file):
-    global temp_files
-    html_output_file = tempfile.NamedTemporaryFile(delete=OPT_DELETE)
-    temp_files.append(html_output_file.name)
+    html_output_file = NamedTemporaryFile()
     f = open(html_file)
     html = f.read()
     f.close()
@@ -132,12 +134,10 @@ def compress_html(html_file):
 
     js_output_files = []
     for script in scripts:
-        js_file = tempfile.NamedTemporaryFile(delete=OPT_DELETE)
-        temp_files.append(js_file.name)
+        js_file = NamedTemporaryFile()
         js_file.write(script)
         js_file.flush()
-        js_output_file = tempfile.NamedTemporaryFile(delete=OPT_DELETE)
-        temp_files.append(js_output_file.name)
+        js_output_file = NamedTemporaryFile()
         js_output_files.append(js_output_file)
         compile(js_file.name, js_output_file.name, html_file)
 
@@ -158,14 +158,16 @@ def finish_compressors(new_path, old_path):
 
 
 def compress(path):
+    global allow
     try:
         ext = os.path.splitext(path)[1]
-        if ext == '.css':
-            return compress_css(path)
-        elif ext == '.js':
-            return compress_js(path)
-        elif ext == '.html':
-            return compress_html(path)
+        if ext in allow:
+            if ext == '.css':
+                return compress_css(path)
+            elif ext == '.js':
+                return compress_js(path)
+            elif ext == '.html':
+                return compress_html(path)
         uncomp_type_size = getsize(path)
         return (uncomp_type_size, uncomp_type_size, path)
     except KeyboardInterrupt:
@@ -298,7 +300,7 @@ if __name__ == '__main__':
 
     # Take one position argument (directory)
     # and optional arguments for compiler path and multiprocessing
-
+    global allow
     global compiler_path
     global num_procs
     global temp_files
@@ -316,10 +318,14 @@ if __name__ == '__main__':
         parser.add_argument('-j', metavar='NUM', default=0, type=int,
                             dest='num_procs',
                             help='Run NUM processes in parallel')
+        parser.add_argument('-a', metavar='allow', default='.html,.js,.css', type=str,
+                          dest='allow',
+                          help='List of allowed file extensions (include periods separate by comma: e.g., .html,.css) ')
         args = parser.parse_args()
         directory = args.directory
         compiler_path = args.compiler
         num_procs = args.num_procs
+        allow = [x.strip() for x in args.allow.split(',')]
     else:
         # Use optparse
         usage = 'usage: %prog [options] <pyjamas-output-directory>'
@@ -329,6 +335,9 @@ if __name__ == '__main__':
         parser.add_option('-j', metavar='NUM', default=0, type=int,
                           dest='num_procs',
                           help='Run NUM processes in parallel')
+        parser.add_option('-a', metavar='allow', default=0, type=str,
+                          dest='allow',
+                          help='List of allowed file extensions (include periods separate by comma: e.g., .html,.css) ')
         options, args = parser.parse_args()
         if len(args) != 1:
             parser.error('Please specify the directory to compress')
@@ -336,8 +345,9 @@ if __name__ == '__main__':
         directory = args[0]
         compiler_path = options.compiler
         num_procs = options.num_procs
+        allow = [x.strip() for x in options.allow.split(',')]
+    
     temp_files = list()
-
     if not compiler_path:
         # Not specified on command line
         # Try environment
@@ -367,13 +377,17 @@ if __name__ == '__main__':
         except NotImplementedError:
             print("Could not determine CPU Count. Using One process")
             num_procs = 1
-
+    
+    if not allow:
+        allow = ['.html', '.css', '.js']
+        print('defaulting to to %s'%allow)
+    
     print("Running %d processes" % num_procs)
 
     try:
         compress_all(directory)
-        do_cleanup()
     except KeyboardInterrupt:
         print('')
         print('Compression Aborted')
+    finally:
         do_cleanup()
