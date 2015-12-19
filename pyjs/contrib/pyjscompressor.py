@@ -32,7 +32,7 @@ import re
 import shutil
 import subprocess
 import sys
-from tempfile import NamedTemporaryFile as _NamedTemporaryFile
+import tempfile
 
 compiler_path=os.path.join(os.path.dirname(__file__),'compiler.jar')
 
@@ -68,10 +68,9 @@ def compile(js_file, js_output_file, html_file=''):
     if debug:
         args.append('--formatting=pretty_print')
 
-    process = subprocess.Popen(args=args,
+    error = subprocess.call(args=args,
                             stdout=open(os.devnull, 'w'),
                             stderr=subprocess.STDOUT)
-    output, error = process.communicate()
 
     if error:
         raise Exception(' '.join([
@@ -80,7 +79,7 @@ def compile(js_file, js_output_file, html_file=''):
 
 
 def compress_css(css_file):
-    css_output_file = NamedTemporaryFile()
+    css_output_file = tempfile.NamedTemporaryFile()
     f = open(css_file)
     css = f.read()
     css = re.sub(r"\s+([!{};:>+\(\)\],])", r"\1", css)
@@ -93,13 +92,13 @@ def compress_css(css_file):
 
 
 def compress_js(js_file):
-    js_output_file = NamedTemporaryFile()
+    js_output_file = tempfile.NamedTemporaryFile()
     compile(js_file, js_output_file.name)
     return finish_compressors(js_output_file.name, js_file)
 
 
 def compress_html(html_file):
-    html_output_file = NamedTemporaryFile()
+    html_output_file = tempfile.NamedTemporaryFile()
 
     f = open(html_file)
     html = f.read()
@@ -124,10 +123,10 @@ def compress_html(html_file):
 
     js_output_files = []
     for script in scripts:
-        js_file = NamedTemporaryFile()
+        js_file = tempfile.NamedTemporaryFile()
         js_file.write(script)
         js_file.flush()
-        js_output_file = NamedTemporaryFile()
+        js_output_file = tempfile.NamedTemporaryFile()
         js_output_files.append(js_output_file)
         compile(js_file.name, js_output_file.name, html_file)
 
@@ -205,7 +204,7 @@ def getsmallpath(path, max_chars):
     return smallpath
 
 
-def compress_all(path, exts):
+def compress_all(path):
     # Print headers for progress output
     print('%45s  %s' % ('Files', 'Compression'))
 
@@ -221,12 +220,7 @@ def compress_all(path, exts):
         files_to_compress = []
         for root, dirs, files in os.walk(path):
             for file in files:
-                ext = '.' + file.split('.')[1]
-                if exts:
-                    if ext in exts:# only allow matching extensions
-                        files_to_compress.append(os.path.join(root, file))
-                else:
-                    files_to_compress.append(os.path.join(root, file))
+                files_to_compress.append(os.path.join(root, file))
 
         if num_procs > 1:
             proc_pool = multiprocessing.Pool(num_procs)
@@ -281,19 +275,17 @@ def compress_all(path, exts):
             (p_size / 1024., n_size / 1024.)
     print('%s %s' % (sizes.ljust(51), "%4.1f%%" % compression))
 
-def do_pyjscompressor(directory, c_path=compiler_path, n_procs=0, opts='SIMPLE_OPTIMIZATIONS', dbg=False, allow = None):
+def dopyjscompressor(directory, c_path=compiler_path, n_procs=0, opts='SIMPLE_OPTIMIZATIONS', dbg=False):
     global compiler_path
     global num_procs
     global debug
     global optimizations
-    global temp_files
 
     compiler_path=c_path
     num_procs = n_procs
     optimizations = opts
     debug = dbg
-    temp_files = list()
-    
+
     if not compiler_path:
         # Not specified on command line
         # Try environment
@@ -323,37 +315,16 @@ def do_pyjscompressor(directory, c_path=compiler_path, n_procs=0, opts='SIMPLE_O
         except NotImplementedError:
             print("Could not determine CPU Count. Using One process")
             num_procs = 1
-    
-    if allow:
-        [x.strip() for x in allow.split(',')]
-        
+
     print("Running %d processes" % num_procs)
 
     try:
-        compress_all(directory, allow)
+        compress_all(directory)
     except KeyboardInterrupt:
         print('')
         print('Compression Aborted')
 
-# writing to a tempFile has different behavior on windows and linux
-def NamedTemporaryFile():
-    global temp_files
-    if sys.platform == "linux" or sys.platform == "linux2":
-        OPT_DELETE = True
-    elif sys.platform == "darwin":
-        OPT_DELETE= True
-    elif sys.platform == "win32":
-        OPT_DELETE = False    
-    tempFile = _NamedTemporaryFile(delete = OPT_DELETE)
-    temp_files.append(tempFile.name)
-    return tempFile
 
-def do_cleanup():
-    for temp_file in temp_files:
-        if os.path.exists(temp_file):
-            print 'remove %s'%temp_file
-            os.remove(temp_file)
-            
 def main():
     try:
         import argparse
@@ -381,9 +352,6 @@ def main():
         parser.add_argument('-o', metavar='OPTIMIZATION_LEVEL', default='SIMPLE_OPTIMIZATIONS', 
                             type=str, dest='optimizations',
                             help='Closure Compiler Optimization levels')
-        parser.add_argument('-a', metavar='allow', default='.html,.js,.css', type=str,
-                          dest='allow',
-                          help='List of allowed file extensions (include periods separate by comma: e.g., .html,.css) ')
         options = parser.parse_args()
         directory = options.directory
     else:
@@ -400,16 +368,12 @@ def main():
         parser.add_option('-o', metavar='OPTIMIZATION_LEVEL', default='SIMPLE_OPTIMIZATION', 
                           type=str, dest='optimizations',
                           help='Closure Compiler Optimization levels')
-        parser.add_option('-a', metavar='allow', default=0, type=str,
-                          dest='allow',
-                          help='List of allowed file extensions (include periods separate by comma: e.g., .html,.css) ')
         options, args = parser.parse_args()
         if len(args) != 1:
             parser.error('Please specify the directory to compress')
         directory = args[0]
-    do_pyjscompressor(directory, options.compiler, options.num_procs, options.optimizations, options.debug, options.allow)
-    do_cleanup()
-    
+    dopyjscompressor(directory, options.compiler, options.num_procs, options.optimizations, options.debug)
+
 if __name__ == '__main__':
     main()
 
