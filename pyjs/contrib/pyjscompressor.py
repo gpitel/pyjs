@@ -149,7 +149,7 @@ def finish_compressors(new_path, old_path):
 
 def compress(path):
     try:
-        ext = os.path.splitext(path)[1]
+        ext = os.path.splitext(path)[-1]
         if ext == '.css':
             return compress_css(path)
         elif ext == '.js':
@@ -221,7 +221,8 @@ def compress_all(path, exts):
         files_to_compress = []
         for root, dirs, files in os.walk(path):
             for file in files:
-                ext = '.' + file.split('.')[1]
+                ext = '.' + file.split('.')[-1]
+                print ext
                 if exts:
                     if ext in exts:# only allow matching extensions
                         files_to_compress.append(os.path.join(root, file))
